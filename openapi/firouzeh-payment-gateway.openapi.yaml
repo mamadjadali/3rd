@@ -1,0 +1,569 @@
+openapi: 3.1.0
+info:
+  title: Firouzeh Payment Gateway (FPG)
+  version: 2.0.1
+  summary: Credit payment gateway API — get token, redirect to CPG, callback, verify
+  description: |
+    # Overview
+
+    **Firouzeh Payment Gateway (درگاه پرداخت اعتباری فیروزه)** lets a merchant start a credit/BNPL-style
+    payment, send the customer to Firouzeh’s hosted payment page (CPG), receive the result on a
+    merchant callback URL, and finally **verify** the transaction server-to-server.
+
+    This document is based on the official Firouzeh gateway PDF (v2.0.1) plus live SIT checks against
+    `api-sit.firouzeh.com`.
+
+    ## Actors
+
+    | Actor | Role |
+    | --- | --- |
+    | Merchant backend | Calls **get-token** and **verify**; hosts **callback** endpoint |
+    | Customer browser | Redirected to **CPG** with the token |
+    | Firouzeh API | Issues tokens, validates merchant, verifies payments |
+    | Firouzeh CPG | Hosted payment UI (`cpg-*.firouzeh.com`) |
+
+    ## Full payment lifecycle
+
+    1. **Get token** — Merchant backend `POST /api/v1/cpg/get-token/` with invoice, merchant id, amount (rial), and callback URL.
+    2. **Redirect user** — Browser `GET {cpgBaseUrl}?token={token}` opens the payment page.
+    3. **Callback** — After pay/cancel, Firouzeh calls merchant `callBackUrl` via **GET** with result query params.
+    4. **Verify** — Merchant backend `POST /api/v1/cpg/verify/` with `merchantNumber` + `refId` within **20 minutes** of callback.
+
+    ```
+    Merchant API          Firouzeh API           Customer            Firouzeh CPG
+         |                     |                    |                     |
+         |-- get-token ------->|                    |                     |
+         |<----- token --------|                    |                     |
+         |---- redirect browser ------------------->|-- open CPG -------->|
+         |                     |                    |<---- pay/cancel ----|
+         |<-- GET callback -----|--------------------|---------------------|
+         |-- verify ---------->|                    |                     |
+         |<---- SUCCESS -------|                    |                     |
+    ```
+
+    ## Environments
+
+    | Env | API base (`gateWayBaseUrl` for REST) | CPG base (browser redirect) |
+    | --- | --- | --- |
+    | SIT | `https://api-sit.firouzeh.com/cf` | `https://cpg-sit.firouzeh.com/` |
+    | Production | provided by Firouzeh | provided by Firouzeh |
+
+    REST paths in this spec are relative to the **API** base URL. The CPG host is separate and is only
+    used for the customer redirect (step 2).
+
+    ## Authentication / merchant identity
+
+    There is no Bearer header in the published doc. The merchant is identified by **`merchantNumber`**
+    on get-token and verify. Callback URL and caller IP are validated by Firouzeh (see error codes).
+
+    ## Operational rules observed / documented
+
+    - **`callBackUrl`** must be an allowed URL for the merchant (invalid → `001113`). Domains such as
+      `https://mobile140.com/...` are accepted when registered for that merchant.
+    - **`amount`** is in **rial** (`number`). Gateway/merchant rules may reject some values
+      (invalid → `001133`). On SIT, amounts **≥ 20000** succeeded in spot checks while lower values failed.
+    - **`invoiceId`** must be unique (duplicate → `001114`).
+    - **Verify window**: up to **20 minutes** after callback.
+    - Re-verify of the same `refId` returns status **`ALREADY_VERIFIED`** (duplicate verify).
+
+    ## Status values (`GateWayResponseEnum`)
+
+    | Value | Meaning |
+    | --- | --- |
+    | `SUCCESS` | Operation / payment succeeded |
+    | `CANCELED` | Customer canceled payment |
+    | `ALREADY_VERIFIED` | Transaction was already verified |
+    | `FAILED` | Payment did not succeed |
+    | `PENDING` | Waiting for process completion |
+    | `RETRY` | Retry the operation |
+
+  contact:
+    name: Firouzeh Financial Group
+    url: https://firouzeh.com
+servers:
+  - url: https://api-sit.firouzeh.com/cf
+    description: SIT (test) API base — use for get-token and verify
+  - url: '{apiBaseUrl}'
+    description: Configurable API base (production or other)
+    variables:
+      apiBaseUrl:
+        default: https://api-sit.firouzeh.com/cf
+tags:
+  - name: Token
+    description: Create a one-time payment token before redirecting the customer
+  - name: Checkout
+    description: Customer-facing CPG redirect (hosted UI — not on the API host)
+  - name: Callback
+    description: Asynchronous result delivery to the merchant (incoming GET from Firouzeh)
+  - name: Verify
+    description: Server-to-server confirmation of a completed payment
+paths:
+  /api/v1/cpg/get-token/:
+    post:
+      operationId: getPaymentToken
+      tags:
+        - Token
+      summary: Get payment token
+      description: |
+        Starts a payment by asking Firouzeh to issue a **token**.
+
+        On success (`status = SUCCESS`), redirect the customer browser to the CPG URL with that token
+        (see **Redirect customer to payment page**).
+
+        ### Request body fields
+
+        | Field | Required | Description |
+        | --- | --- | --- |
+        | `invoiceId` | yes | Merchant invoice / order id (unique per payment attempt) |
+        | `merchantNumber` | yes | Merchant UUID assigned by Firouzeh |
+        | `amount` | yes | Amount in **rial** |
+        | `callBackUrl` | yes | Absolute HTTPS URL Firouzeh will call after payment (exact property name) |
+        | `payload` | no | Optional opaque string for merchant extra data |
+
+        ### Success response
+
+        ```json
+        { "status": "SUCCESS", "token": "<uuid>" }
+        ```
+
+        ### Typical errors
+
+        - `001133` — invalid amount
+        - `001113` — invalid callback URL (not allowed / malformed)
+        - `001112` — invalid caller IP
+        - `001111` — merchant/shop not found
+        - `001114` — duplicate invoice id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GetTokenRequest'
+            examples:
+              sitSuccessShape:
+                summary: SIT example (registered mobile140 callback)
+                value:
+                  invoiceId: M140-1710000000
+                  merchantNumber: a0a82ec8-18f1-4def-99a2-6872a85aec7e
+                  amount: 20000
+                  callBackUrl: https://mobile140.com/service/verify-payment?type=bnpl&key=bnpl-unique-id
+                  payload: optional-merchant-data
+      responses:
+        '200':
+          description: Token issued (check `status` field — business success is `SUCCESS`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetTokenResponse'
+              examples:
+                success:
+                  summary: Live SIT success
+                  value:
+                    status: SUCCESS
+                    token: 78428d1c-557a-4ef9-943a-56e6a20a4127
+        '400':
+          description: Validation / business error (amount, callback, duplicate invoice, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayError'
+              examples:
+                invalidAmount:
+                  summary: Invalid amount (001133)
+                  value:
+                    code: '001133'
+                    detail: مبلغ نامعتبر.
+                invalidCallback:
+                  summary: Invalid callback URL (001113)
+                  value:
+                    code: '001113'
+                    detail: آدرس فراخوانی نامعتبر.
+                duplicateInvoice:
+                  summary: Duplicate invoice id (001114)
+                  value:
+                    code: '001114'
+                    detail: شناسه تکراری است.
+        '404':
+          description: Merchant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayError'
+              examples:
+                shopNotFound:
+                  value:
+                    code: '001111'
+                    detail: .فروشگاه یافت نشد
+        '422':
+          description: Request schema validation failed (e.g. missing `callBackUrl`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+
+  /:
+    get:
+      operationId: redirectToPaymentPage
+      tags:
+        - Checkout
+      summary: Redirect customer to payment page (CPG host)
+      description: |
+        **Important:** This operation is served by the **CPG** host, not the API host.
+
+        After a successful get-token, redirect the customer’s browser to:
+
+        `{cpgBaseUrl}?token={token}`
+
+        Examples:
+
+        - SIT: `https://cpg-sit.firouzeh.com/?token=78428d1c-557a-4ef9-943a-56e6a20a4127`
+        - Production CPG base is provided by Firouzeh
+
+        The customer completes or cancels payment on this page. Firouzeh then notifies the merchant
+        via the `callBackUrl` registered in get-token.
+      servers:
+        - url: https://cpg-sit.firouzeh.com
+          description: SIT CPG (browser UI)
+        - url: '{cpgBaseUrl}'
+          description: Configurable CPG base
+          variables:
+            cpgBaseUrl:
+              default: https://cpg-sit.firouzeh.com
+      parameters:
+        - name: token
+          in: query
+          required: true
+          description: Token returned by get-token when `status` is `SUCCESS`
+          schema:
+            type: string
+            format: uuid
+            example: 78428d1c-557a-4ef9-943a-56e6a20a4127
+      responses:
+        '200':
+          description: HTML payment application (SPA) loaded in the browser
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /service/verify-payment:
+    get:
+      operationId: paymentCallback
+      tags:
+        - Callback
+      summary: Merchant callback — receive payment result (incoming from Firouzeh)
+      description: |
+        This path documents the **merchant-owned** callback endpoint that Firouzeh calls with **GET**
+        after the customer finishes (or cancels) on CPG.
+
+        The absolute URL you pass as `callBackUrl` in get-token must match what Firouzeh allows for
+        your merchant. Example used in SIT:
+
+        `https://mobile140.com/service/verify-payment?type=bnpl&key={dynamicString}`
+
+        Firouzeh appends (or includes) result query parameters described below. Your backend should:
+
+        1. Validate the request (signature/IP rules if Firouzeh provides them later).
+        2. Read `status`, `invoiceId`, `token`, `amount`, `refId`.
+        3. Call **verify** with `refId` when status indicates a successful payment path.
+        4. Idempotently update your order using `invoiceId` / `refId`.
+
+        > In OpenAPI terms this operation is documented on a merchant server. Use your real public
+        > origin when implementing; the path/query shape must match what you registered.
+      servers:
+        - url: https://mobile140.com
+          description: Example merchant origin used in SIT (replace with yours)
+      parameters:
+        - name: type
+          in: query
+          required: false
+          description: Merchant-specific routing hint (e.g. `bnpl`) when using a shared callback path
+          schema:
+            type: string
+            example: bnpl
+        - name: key
+          in: query
+          required: false
+          description: Merchant-specific dynamic correlation key embedded in callBackUrl
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: true
+          description: Transaction status from Firouzeh (see GateWayResponseEnum)
+          schema:
+            $ref: '#/components/schemas/GateWayResponseEnum'
+        - name: invoiceId
+          in: query
+          required: true
+          description: Same invoice id sent in get-token
+          schema:
+            type: string
+        - name: token
+          in: query
+          required: true
+          description: Token created for this payment
+          schema:
+            type: string
+        - name: amount
+          in: query
+          required: true
+          description: Transaction amount (rial)
+          schema:
+            type: number
+        - name: refId
+          in: query
+          required: true
+          description: Gateway tracking / reference id — required later for verify
+          schema:
+            type: string
+      responses:
+        '200':
+          description: |
+            Merchant acknowledges the callback. Exact body is up to the merchant; Firouzeh mainly
+            needs a successful HTTP response. Prefer returning a simple OK page or JSON.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: OK
+
+  /api/v1/cpg/verify/:
+    post:
+      operationId: verifyPayment
+      tags:
+        - Verify
+      summary: Verify (confirm) a payment
+      description: |
+        Confirms the payment server-to-server after callback.
+
+        ### Timing
+
+        Verification is allowed for up to **20 minutes** after callback.
+
+        ### First successful verify
+
+        ```json
+        { "status": "SUCCESS", "amount": 1000 }
+        ```
+
+        (`amount` mirrors the paid amount; example value `1000` appears in the vendor PDF.)
+
+        ### Subsequent verify with the same `refId`
+
+        Returns status indicating the transaction was **already verified** (`ALREADY_VERIFIED`).
+
+        Always treat verify as **idempotent** in your order state machine.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+            examples:
+              typical:
+                value:
+                  merchantNumber: a0a82ec8-18f1-4def-99a2-6872a85aec7e
+                  refId: '1234567890'
+      responses:
+        '200':
+          description: Verify result — inspect `status`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResponse'
+              examples:
+                firstSuccess:
+                  summary: First successful verify
+                  value:
+                    status: SUCCESS
+                    amount: 20000
+                alreadyVerified:
+                  summary: Duplicate verify
+                  value:
+                    status: ALREADY_VERIFIED
+        '400':
+          description: Business / validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayError'
+        '404':
+          description: Merchant not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayError'
+
+components:
+  schemas:
+    GateWayResponseEnum:
+      type: string
+      description: Canonical gateway status values from the Firouzeh document
+      enum:
+        - SUCCESS
+        - CANCELED
+        - ALREADY_VERIFIED
+        - FAILED
+        - PENDING
+        - RETRY
+      examples:
+        - SUCCESS
+        - CANCELED
+        - FAILED
+
+    GetTokenRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - invoiceId
+        - merchantNumber
+        - amount
+        - callBackUrl
+      properties:
+        invoiceId:
+          type: string
+          description: |
+            Merchant invoice / order identifier. Must be unique for each new payment attempt.
+            Reusing an id that already exists returns error `001114`.
+          minLength: 1
+          example: M140-1710000000
+        merchantNumber:
+          type: string
+          format: uuid
+          description: Merchant identifier issued by Firouzeh (UUID string)
+          example: a0a82ec8-18f1-4def-99a2-6872a85aec7e
+        amount:
+          type: number
+          description: |
+            Payment amount in **rial**. Subject to gateway/merchant validation
+            (invalid amounts return `001133`). Prefer integers. On SIT, values below ~20000 rial
+            were rejected for the tested merchant while 20000+ succeeded.
+          exclusiveMinimum: 0
+          example: 20000
+        callBackUrl:
+          type: string
+          format: uri
+          description: |
+            Absolute URL that Firouzeh will invoke with GET after the customer finishes on CPG.
+            Property name must be exactly `callBackUrl`. Must be allowed for the merchant
+            (invalid → `001113`). May include merchant query params, e.g.
+            `https://mobile140.com/service/verify-payment?type=bnpl&key={dynamic}`.
+          example: https://mobile140.com/service/verify-payment?type=bnpl&key=bnpl-unique-id
+        payload:
+          type: string
+          description: Optional extra merchant data returned/associated as needed by Firouzeh
+          example: order:42;channel:app
+
+    GetTokenResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          allOf:
+            - $ref: '#/components/schemas/GateWayResponseEnum'
+          description: Request status. Token is present when this equals `SUCCESS`.
+        token:
+          type: string
+          format: uuid
+          description: Payment token — only when `status` is `SUCCESS`. Pass to CPG as `?token=`.
+          example: 78428d1c-557a-4ef9-943a-56e6a20a4127
+
+    VerifyRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - merchantNumber
+        - refId
+      properties:
+        merchantNumber:
+          type: string
+          format: uuid
+          description: Same merchant number used when creating the token
+          example: a0a82ec8-18f1-4def-99a2-6872a85aec7e
+        refId:
+          type: string
+          description: Tracking / reference id received on the merchant callback
+          minLength: 1
+          example: '1234567890'
+
+    VerifyResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          allOf:
+            - $ref: '#/components/schemas/GateWayResponseEnum'
+          description: |
+            `SUCCESS` on first successful verify. Later calls with the same `refId` yield
+            `ALREADY_VERIFIED` (per vendor doc).
+        amount:
+          type: number
+          description: Confirmed amount (rial) when verify succeeds
+          example: 20000
+
+    GatewayError:
+      type: object
+      description: Business error payload returned by Firouzeh API
+      properties:
+        code:
+          type: string
+          description: Firouzeh system error code
+          examples:
+            - '001133'
+            - '001113'
+            - '001112'
+            - '001111'
+            - '001114'
+        detail:
+          type: string
+          description: Human-readable error message (often Persian)
+          example: مبلغ نامعتبر.
+      required:
+        - code
+
+    ValidationError:
+      type: object
+      description: FastAPI-style validation error (observed on SIT when body schema is wrong)
+      properties:
+        detail:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+  examples:
+    SystemErrors:
+      summary: Documented system error table
+      value:
+        - code: '001133'
+          message: مبلغ نامعتبر
+          http: 400
+        - code: '001113'
+          message: آدرس فراخوانی نامعتبر
+          http: 400
+        - code: '001112'
+          message: آدرس IP نامعتبر است
+          http: 400
+        - code: '001111'
+          message: فروشگاه یافت نشد
+          http: 404
+        - code: '001114'
+          message: شناسه تکراری است
+          http: 400
+
+x-firouzeh-notes:
+  cpgRedirectTemplate: '{cpgBaseUrl}?token={token}'
+  sit:
+    apiBaseUrl: https://api-sit.firouzeh.com/cf
+    cpgBaseUrl: https://cpg-sit.firouzeh.com/
+    sampleMerchantNumber: a0a82ec8-18f1-4def-99a2-6872a85aec7e
+  verifyDeadlineMinutes: 20
+  errorCodes:
+    '001133': Invalid amount (HTTP 400)
+    '001113': Invalid callback URL (HTTP 400)
+    '001112': Invalid IP address (HTTP 400)
+    '001111': Shop/merchant not found (HTTP 404)
+    '001114': Duplicate invoice id (HTTP 400)

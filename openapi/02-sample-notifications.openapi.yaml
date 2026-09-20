@@ -1,0 +1,187 @@
+openapi: 3.1.0
+info:
+  title: Sample Notifications API
+  version: 1.0.0
+  description: >
+    Example third-party notification / webhook-send API for the Scalar portal scaffold.
+    Replace with a real vendor OpenAPI document.
+servers:
+  - url: https://api.notifications.example.com/v1
+    description: Production
+security:
+  - BearerAuth: []
+paths:
+  /messages:
+    post:
+      operationId: sendMessage
+      summary: Send a notification message
+      tags:
+        - Messages
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+            example:
+              channel: email
+              to: user@example.com
+              template: welcome
+              data:
+                name: Ada
+      responses:
+        "202":
+          description: Accepted for delivery
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageReceipt"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /messages/{message_id}:
+    get:
+      operationId: getMessage
+      summary: Get message delivery status
+      tags:
+        - Messages
+      parameters:
+        - name: message_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Message status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageReceipt"
+        "404":
+          description: Not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /webhooks/endpoints:
+    post:
+      operationId: createWebhookEndpoint
+      summary: Register a webhook endpoint
+      tags:
+        - Webhooks
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookEndpointRequest"
+      responses:
+        "201":
+          description: Endpoint created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookEndpoint"
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API token
+  schemas:
+    SendMessageRequest:
+      type: object
+      required:
+        - channel
+        - to
+        - template
+      properties:
+        channel:
+          type: string
+          enum:
+            - email
+            - sms
+            - push
+        to:
+          type: string
+          description: Recipient address or device id
+        template:
+          type: string
+        data:
+          type: object
+          additionalProperties: true
+    MessageReceipt:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+          example: msg_01HXYZ
+        status:
+          type: string
+          enum:
+            - queued
+            - sent
+            - delivered
+            - failed
+        channel:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+    WebhookEndpointRequest:
+      type: object
+      required:
+        - url
+        - events
+      properties:
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+          minItems: 1
+        description:
+          type: string
+    WebhookEndpoint:
+      type: object
+      required:
+        - id
+        - url
+        - events
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+          format: uri
+        events:
+          type: array
+          items:
+            type: string
+        secret:
+          type: string
+          description: Signing secret (shown once)
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+            message:
+              type: string
