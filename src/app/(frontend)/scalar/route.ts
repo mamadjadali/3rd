@@ -70,5 +70,10 @@ export async function GET(request: Request) {
     pageTitle: 'Third-party APIs',
     cdn: SCALAR_CDN,
     sources,
+    hideTestRequestButton: true,
+    defaultHttpClient: {
+      targetKey: 'csharp',
+      clientKey: 'httpclient',
+    },
   })()
 }
