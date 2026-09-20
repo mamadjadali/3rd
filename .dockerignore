@@ -1,0 +1,28 @@
+# Dependencies & build
+node_modules
+.next
+out
+build
+coverage
+
+# Local / secrets
+.env
+.env*.local
+.env.pos.local
+test-results
+playwright-report
+blob-report
+playwright/.cache
+
+# Uploads & live tests (runtime volumes / gitignored)
+media
+openapi-uploads
+vendor-docs-uploads
+third-party-tests
+
+# Misc
+.git
+.github
+.vscode
+.idea
+docker-compose*
