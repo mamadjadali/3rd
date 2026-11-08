@@ -18,6 +18,34 @@ const dirname = path.dirname(filename)
 export default buildConfig({
   admin: {
     user: Users.slug,
+    meta: {
+      titleSuffix: ' — DWP',
+      icons: [
+        {
+          rel: 'icon',
+          type: 'image/png',
+          url: '/brand/dwp-icon-32.png',
+        },
+        {
+          rel: 'apple-touch-icon',
+          type: 'image/png',
+          url: '/brand/dwp-icon-180.png',
+        },
+      ],
+      openGraph: {
+        images: [
+          {
+            url: '/brand/dwp-logo.png',
+          },
+        ],
+      },
+    },
+    components: {
+      graphics: {
+        Logo: '/components/brand/Logo#Logo',
+        Icon: '/components/brand/Icon#Icon',
+      },
+    },
     importMap: {
       baseDir: path.resolve(dirname),
     },

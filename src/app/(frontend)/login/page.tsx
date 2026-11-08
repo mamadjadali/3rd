@@ -14,8 +14,15 @@ export default async function LoginPage() {
   return (
     <div className="login-page">
       <div className="login-card">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          alt="DWP"
+          className="login-logo"
+          height={36}
+          src="/brand/dwp-logo.png"
+          width={96}
+        />
         <h1>API portal</h1>
-        <p>Sign in with your viewer account to open Scalar docs.</p>
         <LoginForm />
       </div>
     </div>

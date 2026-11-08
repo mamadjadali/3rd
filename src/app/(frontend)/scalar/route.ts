@@ -37,6 +37,7 @@ export async function GET(request: Request) {
   </head>
   <body>
     <main>
+      <img alt="DWP" src="/brand/dwp-logo.png" height="36" style="height:36px;width:auto;margin:0 auto 1rem;display:block" />
       <h1>No API specs yet</h1>
       <p>An admin needs to add an enabled document under <strong>API Specs</strong> in the admin panel.</p>
       <p><a href="/admin/collections/api-specs">Open admin</a> · <a href="/login">Viewer sign in</a></p>
